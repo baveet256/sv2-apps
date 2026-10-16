@@ -30,8 +30,8 @@ struct Io {
     upstream_to_channel_manager_receiver: Receiver<InboundFrame>,
     channel_manager_to_sv1_server_sender: Sender<MiningOwned>,
     channel_manager_to_sv1_server_receiver: Receiver<MiningOwned>,
-    sv1_server_to_channel_manager_sender: Sender<(MiningOwned, Option<String>)>,
-    sv1_server_to_channel_manager_receiver: Receiver<(MiningOwned, Option<String>)>,
+    sv1_server_to_channel_manager_sender: Sender<(MiningOwned, crate::utils::Sv1ShareMetadata)>,
+    sv1_server_to_channel_manager_receiver: Receiver<(MiningOwned, crate::utils::Sv1ShareMetadata)>,
 }
 
 /// The core coordinator of the Translator runtime, parameterized by its current bootstrap `State`.

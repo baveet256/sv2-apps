@@ -5,7 +5,7 @@ use crate::{
     TproxyMode,
     error::{self, Action, LoopControl, TproxyError, TproxyErrorKind, TproxyResult},
     utils::{
-        AGGREGATED_CHANNEL_ID, AggregatedState, AtomicAggregatedState,
+        AGGREGATED_CHANNEL_ID, AggregatedState, AtomicAggregatedState, Sv1ShareMetadata,
         aggregated_upstream_user_identity, tlv_user_identity_from_sv1_worker_name,
     },
 };
@@ -19,7 +19,7 @@ use stratum_apps::{
         channels_sv2::{
             client::{
                 extended::ExtendedChannel, group::GroupChannel,
-                share_accounting::ShareValidationError,
+                share_accounting::{ShareValidationError, ShareValidationResult},
             },
             extranonce_manager::{ExtranonceAllocator, bytes_needed},
         },
@@ -80,8 +80,8 @@ struct ChannelManagerIo {
     upstream_sender: Sender<OutboundFrame>,
     upstream_receiver: Receiver<InboundFrame>,
     sv1_server_sender: Sender<MiningOwned>,
-    // Option<String> carries non-empty sv1_worker_name metadata for SubmitSharesExtended.
-    sv1_server_receiver: Receiver<(MiningOwned, Option<String>)>,
+    // Sv1ShareMetadata carries optional worker name + share_hash for SubmitSharesExtended.
+    sv1_server_receiver: Receiver<(MiningOwned, Sv1ShareMetadata)>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -90,7 +90,7 @@ impl ChannelManagerIo {
         upstream_sender: Sender<OutboundFrame>,
         upstream_receiver: Receiver<InboundFrame>,
         sv1_server_sender: Sender<MiningOwned>,
-        sv1_server_receiver: Receiver<(MiningOwned, Option<String>)>,
+        sv1_server_receiver: Receiver<(MiningOwned, Sv1ShareMetadata)>,
     ) -> Self {
         Self {
             upstream_sender,
@@ -429,7 +429,7 @@ impl ChannelManager {
         upstream_sender: Sender<OutboundFrame>,
         upstream_receiver: Receiver<InboundFrame>,
         sv1_server_sender: Sender<MiningOwned>,
-        sv1_server_receiver: Receiver<(MiningOwned, Option<String>)>,
+        sv1_server_receiver: Receiver<(MiningOwned, Sv1ShareMetadata)>,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
         tproxy_mode: TproxyMode,
@@ -619,12 +619,14 @@ impl ChannelManager {
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
     async fn handle_downstream_message(self: Arc<Self>) -> TproxyResult<(), error::ChannelManager> {
-        let (message, sv1_worker_name) = self
+        let (message, share_metadata) = self
             .channel_manager_io
             .sv1_server_receiver
             .recv()
             .await
             .map_err(TproxyError::shutdown)?;
+        let sv1_worker_name = share_metadata.worker_name.clone();
+        let sv1_share_hash = share_metadata.share_hash;
         match message {
             MiningOwned::OpenExtendedMiningChannel(m) => {
                 let mut open_channel_msg = m.clone();
@@ -713,10 +715,12 @@ impl ChannelManager {
                     })?;
             }
             MiningOwned::SubmitSharesExtended(mut m) => {
+                let downstream_channel_id = m.channel_id;
+                let worker = sv1_worker_name.as_deref();
+
                 if self.mode.is_aggregated()
                     && self.extended_channels.contains_key(&AGGREGATED_CHANNEL_ID)
                 {
-                    let downstream_channel_id = m.channel_id;
                     let downstream_extranonce_prefix = self
                         .extended_channels
                         .with(&downstream_channel_id, |channel| {
@@ -752,26 +756,70 @@ impl ChannelManager {
                             aggregated_channel.validate_share(m.clone())
                         });
                     match value {
-                        Some(Ok(_result)) => {
-                            info!(
-                                "SubmitSharesExtended: valid share, forwarding it to upstream | channel_id: {}, sequence_number: {} ☑️",
-                                upstream_extended_channel_id, m.sequence_number
-                            );
+                        Some(Ok(result)) => {
+                            let (share_hash, block_candidate) = match result {
+                                ShareValidationResult::Valid(hash) => (hash, false),
+                                ShareValidationResult::BlockFound(hash) => (hash, true),
+                            };
 
                             // In aggregated mode, use a single sequence counter for all valid
                             // shares.
                             m.sequence_number =
                                 self.next_share_sequence_number(upstream_extended_channel_id);
+
+                            if block_candidate {
+                                warn!(
+                                    event = "block_candidate",
+                                    worker,
+                                    downstream_channel_id,
+                                    upstream_channel_id = upstream_extended_channel_id,
+                                    job_id = m.job_id,
+                                    sequence_number = m.sequence_number,
+                                    share_hash = %share_hash,
+                                    meets_network_target = true,
+                                    "BLOCK_CANDIDATE"
+                                );
+                            }
+                            info!(
+                                event = "share_forwarded",
+                                worker,
+                                downstream_channel_id,
+                                upstream_channel_id = upstream_extended_channel_id,
+                                job_id = m.job_id,
+                                sequence_number = m.sequence_number,
+                                share_hash = %share_hash,
+                                block_candidate,
+                                "share_forwarded"
+                            );
                         }
                         Some(Err(ShareValidationError::DoesNotMeetTarget(error_code))) => {
                             // Per-miner vardiff can intentionally be easier than the aggregated
                             // upstream target, so these locally accepted shares are expected to be
                             // filtered here.
-                            debug!(
-                                channel_id = upstream_extended_channel_id,
-                                error_code,
-                                "SubmitSharesExtended does not meet the upstream channel target"
-                            );
+                            if let Some(share_hash) = sv1_share_hash {
+                                debug!(
+                                    event = "share_not_forwarded",
+                                    worker,
+                                    downstream_channel_id,
+                                    upstream_channel_id = upstream_extended_channel_id,
+                                    job_id = m.job_id,
+                                    share_hash = %share_hash,
+                                    reason = "does_not_meet_upstream_target",
+                                    error_code,
+                                    "share_not_forwarded"
+                                );
+                            } else {
+                                debug!(
+                                    event = "share_not_forwarded",
+                                    worker,
+                                    downstream_channel_id,
+                                    upstream_channel_id = upstream_extended_channel_id,
+                                    job_id = m.job_id,
+                                    reason = "does_not_meet_upstream_target",
+                                    error_code,
+                                    "share_not_forwarded"
+                                );
+                            }
                             return Ok(());
                         }
                         Some(Err(validation_error)) => {
@@ -797,11 +845,12 @@ impl ChannelManager {
                             extended_channel.validate_share(m.clone())
                         });
                     match value {
-                        Some(Ok(_result)) => {
-                            info!(
-                                "SubmitSharesExtended: valid share, forwarding it to upstream | channel_id: {}, sequence_number: {} ☑️",
-                                m.channel_id, m.sequence_number
-                            );
+                        Some(Ok(result)) => {
+                            let (share_hash, block_candidate) = match result {
+                                ShareValidationResult::Valid(hash) => (hash, false),
+                                ShareValidationResult::BlockFound(hash) => (hash, true),
+                            };
+
                             // In non-aggregated mode, each downstream channel has its own sequence
                             // counter.
                             m.sequence_number = self.next_share_sequence_number(m.channel_id);
@@ -823,16 +872,60 @@ impl ChannelManager {
                                 m.extranonce =
                                     new_extranonce.try_into().map_err(TproxyError::shutdown)?;
                             }
+
+                            if block_candidate {
+                                warn!(
+                                    event = "block_candidate",
+                                    worker,
+                                    downstream_channel_id,
+                                    upstream_channel_id = m.channel_id,
+                                    job_id = m.job_id,
+                                    sequence_number = m.sequence_number,
+                                    share_hash = %share_hash,
+                                    meets_network_target = true,
+                                    "BLOCK_CANDIDATE"
+                                );
+                            }
+                            info!(
+                                event = "share_forwarded",
+                                worker,
+                                downstream_channel_id,
+                                upstream_channel_id = m.channel_id,
+                                job_id = m.job_id,
+                                sequence_number = m.sequence_number,
+                                share_hash = %share_hash,
+                                block_candidate,
+                                "share_forwarded"
+                            );
                         }
                         Some(Err(ShareValidationError::DoesNotMeetTarget(error_code))) => {
                             // A downstream vardiff target can intentionally be easier than its
                             // upstream channel target, so these locally accepted shares are
                             // expected to be filtered here.
-                            debug!(
-                                channel_id = m.channel_id,
-                                error_code,
-                                "SubmitSharesExtended does not meet the upstream channel target"
-                            );
+                            if let Some(share_hash) = sv1_share_hash {
+                                debug!(
+                                    event = "share_not_forwarded",
+                                    worker,
+                                    downstream_channel_id,
+                                    upstream_channel_id = m.channel_id,
+                                    job_id = m.job_id,
+                                    share_hash = %share_hash,
+                                    reason = "does_not_meet_upstream_target",
+                                    error_code,
+                                    "share_not_forwarded"
+                                );
+                            } else {
+                                debug!(
+                                    event = "share_not_forwarded",
+                                    worker,
+                                    downstream_channel_id,
+                                    upstream_channel_id = m.channel_id,
+                                    job_id = m.job_id,
+                                    reason = "does_not_meet_upstream_target",
+                                    error_code,
+                                    "share_not_forwarded"
+                                );
+                            }
                             return Ok(());
                         }
                         Some(Err(validation_error)) => {
@@ -1528,7 +1621,10 @@ mod tests {
         };
 
         sv1_server_sender_for_test
-            .send((MiningOwned::UpdateChannel(update_channel), None))
+            .send((
+                MiningOwned::UpdateChannel(update_channel),
+                Sv1ShareMetadata::none(),
+            ))
             .await
             .unwrap();
 
@@ -2334,7 +2430,10 @@ mod tests {
         submission_manager.channel_manager_io.sv1_server_receiver = from_sv1;
         submission_manager.channel_manager_io.upstream_sender = to_upstream;
         to_manager
-            .send((MiningOwned::SubmitSharesExtended(valid_share.clone()), None))
+            .send((
+                MiningOwned::SubmitSharesExtended(valid_share.clone()),
+                Sv1ShareMetadata::none(),
+            ))
             .await
             .unwrap();
         Arc::new(submission_manager)
