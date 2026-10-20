@@ -63,6 +63,13 @@ pub struct TranslatorConfig {
     /// The path to the log file for the Translator.
     #[serde(default, deserialize_with = "opt_path_from_toml")]
     log_file: Option<PathBuf>,
+    /// Append-only JSONL path for share-hash audit events (Phase 2).
+    /// Unset / empty = structured logs only (Phase 1 behavior).
+    #[serde(default, deserialize_with = "opt_path_from_toml")]
+    share_audit_path: Option<PathBuf>,
+    /// When true, JSONL only records `block_candidate` rows and their upstream follow-ups.
+    #[serde(default)]
+    share_audit_block_candidates_only: bool,
     /// Optional monitoring server bind address
     #[serde(default)]
     monitoring_address: Option<SocketAddr>,
@@ -145,10 +152,22 @@ impl TranslatorConfig {
             supported_extensions,
             required_extensions,
             log_file: None,
+            share_audit_path: None,
+            share_audit_block_candidates_only: false,
             monitoring_address,
             monitoring_cache_refresh_secs,
             miner_telemetry: MinerTelemetryConfig::default(),
         }
+    }
+
+    /// Optional path for the append-only share-hash JSONL audit file.
+    pub fn share_audit_path(&self) -> Option<&Path> {
+        self.share_audit_path.as_deref()
+    }
+
+    /// When true, JSONL only records network-difficulty candidates and their follow-ups.
+    pub fn share_audit_block_candidates_only(&self) -> bool {
+        self.share_audit_block_candidates_only
     }
 
     /// Returns the monitoring server bind address (if enabled)

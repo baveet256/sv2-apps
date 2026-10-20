@@ -380,28 +380,21 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 
 ## Phase 2 — Durable JSONL audit trail
 
+**Status: COMPLETE** (live validated 2026-10-20 — see `LOG_EVOLUTION.md`)
+
 **Goal:** Records survive log rotation and container restarts.
 
-**Do**
-- Config: `share_audit_path` (optional), optionally `share_audit_block_candidates_only = false`
-- Append one JSON line per **forwarded** share
-- Second append-only event for `SubmitSharesSuccess` / `SubmitSharesError`, keyed by `(channel_id, sequence_number)`
-- Flush each write for durability in v1
-- Document schema + rotation advice in README
-
-**Questions**
-- Update-in-place vs two events? → default **two events** (`share_forwarded`, `share_upstream_result`)
-- In-process rotate/cap vs ops? → default **ops / logrotate**
-- Full header fields or hash + ids only? → default **hash + ids**; optional forensic flag later
-
-**Cautions**
-- Disk fill on busy farms — document expected volume
-- Correlate on the **upstream** sequence that was actually sent
-- Worker names may be sensitive; don’t put RPC secrets in JSONL
+**Implemented**
+- Config: `share_audit_path`, `share_audit_block_candidates_only` ([`config.rs`](src/lib/config.rs))
+- Module [`share_audit.rs`](src/lib/share_audit.rs): append-only JSONL, flush per line
+- Events: `share_forwarded`, `block_candidate`, `share_upstream_result` (success batched by `last_sequence_number` + count; error by sequence)
+- Pending map correlates hash ↔ upstream sequence
+- Braiins test config writes `./share-audit-phase2.jsonl`
+- Pre-Phase-2 log baseline frozen in [`LOG_EVOLUTION.md`](LOG_EVOLUTION.md)
 
 **Exit criteria**
-- With config set, JSONL grows on submits
-- After pool ack/nack, a second event ties back by sequence
+- [x] Code + unit tests
+- [x] Live: JSONL grows on forwards; success/error lines carry matching `share_hash`
 
 ---
 
@@ -510,6 +503,8 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 | 6 | Private fork first vs PR-ready to sv2-apps? | *open* |
 | 7 | Phase 0 schema frozen | **Yes** — see `SHARE_HASH_AUDIT_SCHEMA.md` |
 | 8 | Phase 1 structured share-hash logs | **Yes** |
+| 9 | Phase 1 live validated (Braiins + miner) | **Yes** (2026-10-20) — see `PHASE1_CHANGES.md` |
+| 10 | Phase 2 JSONL implemented + live validated | **Yes** (2026-10-20) — see `LOG_EVOLUTION.md` |
 
 ---
 

@@ -1,0 +1,54 @@
+# Local Phase-1 share-hash audit test: SV1 miner -> tProxy -> Braiins SV2
+#
+# IMPORTANT: Upstream must be Braiins *SV2*, not classic
+#   stratum+tcp://stratum.braiins.com:3333  (that is SV1)
+# Braiins SV2 authority pubkey from Braiins Pool / SRI hosted examples.
+
+downstream_address = "0.0.0.0"
+downstream_port = 34255
+
+max_supported_version = 2
+min_supported_version = 2
+downstream_extranonce2_size = 4
+
+verify_payout = false
+aggregate_channels = true
+
+log_file = "./tproxy-braiins-phase1.log"
+
+# Phase 2: durable share-hash JSONL (separate from Phase 1 baseline log)
+share_audit_path = "./share-audit-phase2.jsonl"
+share_audit_block_candidates_only = false
+
+supported_extensions = [
+    0x0002,
+]
+
+monitoring_address = "0.0.0.0:9092"
+monitoring_cache_refresh_secs = 15
+
+# Past jobs retained per channel for late-share validation (optional). Unset or 0 uses the
+# channels_sv2 default of 16; set `ceil(16s / your job interval)` to reclaim ~4.5 kB per job.
+# max_past_jobs = 3
+
+[miner_telemetry]
+cidrs = ["192.168.1.0/24"]
+
+[downstream_difficulty_config]
+# Lower hashrate estimate so a small/test miner can still submit shares
+min_individual_miner_hashrate = 100_000_000_000.0
+shares_per_minute = 6.0
+enable_vardiff = true
+
+job_keepalive_interval_secs = 60
+
+[[upstreams]]
+# Braiins Pool SV2 only (Noise handshake + authority pubkey).
+# Do NOT use classic SV1 stratum+tcp://stratum.braiins.com:3333 as upstream —
+# that URL is for miners talking SV1 directly to Braiins, not for tProxy upstream.
+address = "stratum.braiins.com"
+port = 3333
+authority_pubkey = "9awtMD5KQgvRUh2yFbjVeT7b6hjipWcAsQHd6wEhgtDT9soosna"
+# Braiins account username only. Worker names come from the miner's SV1
+# mining.authorize (and optional extension 0x0002 TLV), not from this field.
+user_identity = "baveetstudy"

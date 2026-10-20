@@ -4,6 +4,7 @@ mod mining_message_handler;
 use crate::{
     TproxyMode,
     error::{self, Action, LoopControl, TproxyError, TproxyErrorKind, TproxyResult},
+    share_audit::{ForwardedShare, ShareAudit},
     utils::{
         AGGREGATED_CHANNEL_ID, AggregatedState, AtomicAggregatedState, Sv1ShareMetadata,
         aggregated_upstream_user_identity, tlv_user_identity_from_sv1_worker_name,
@@ -192,6 +193,8 @@ pub struct ChannelManager {
     /// Required to show or not show hashrate on monitoring.
     #[cfg(feature = "monitoring")]
     pub(crate) report_hashrate: bool,
+    /// Optional append-only JSONL share-hash audit (Phase 2).
+    pub(crate) share_audit: ShareAudit,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -434,6 +437,7 @@ impl ChannelManager {
         required_extensions: Vec<u16>,
         tproxy_mode: TproxyMode,
         max_past_jobs: Option<usize>,
+        share_audit: ShareAudit,
         #[cfg(feature = "monitoring")] report_hashrate: bool,
     ) -> Self {
         // Record the cap actually in force. When unset it comes from the `channels_sv2`
@@ -466,6 +470,7 @@ impl ChannelManager {
             aggregated_channel_state: AtomicAggregatedState::new(AggregatedState::NoChannel),
             expected_payout_distribution: Arc::new(OnceLock::new()),
             mode: tproxy_mode,
+            share_audit,
             #[cfg(feature = "monitoring")]
             report_hashrate,
         }
@@ -791,6 +796,15 @@ impl ChannelManager {
                                 block_candidate,
                                 "share_forwarded"
                             );
+                            self.share_audit.record_forwarded(ForwardedShare {
+                                worker,
+                                downstream_channel_id,
+                                upstream_channel_id: upstream_extended_channel_id,
+                                job_id: m.job_id,
+                                sequence_number: m.sequence_number,
+                                share_hash: share_hash.to_string(),
+                                block_candidate,
+                            });
                         }
                         Some(Err(ShareValidationError::DoesNotMeetTarget(error_code))) => {
                             // Per-miner vardiff can intentionally be easier than the aggregated
@@ -897,6 +911,15 @@ impl ChannelManager {
                                 block_candidate,
                                 "share_forwarded"
                             );
+                            self.share_audit.record_forwarded(ForwardedShare {
+                                worker,
+                                downstream_channel_id,
+                                upstream_channel_id: m.channel_id,
+                                job_id: m.job_id,
+                                sequence_number: m.sequence_number,
+                                share_hash: share_hash.to_string(),
+                                block_candidate,
+                            });
                         }
                         Some(Err(ShareValidationError::DoesNotMeetTarget(error_code))) => {
                             // A downstream vardiff target can intentionally be easier than its
@@ -1430,6 +1453,7 @@ mod tests {
             vec![],
             TproxyMode::from(true),
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         )
@@ -1450,6 +1474,7 @@ mod tests {
             vec![],
             TproxyMode::Aggregated,
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         );
@@ -1610,6 +1635,7 @@ mod tests {
             vec![],
             TproxyMode::Aggregated,
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         ));
@@ -1696,6 +1722,7 @@ mod tests {
             vec![],
             TproxyMode::NonAggregated,
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         );
@@ -1745,6 +1772,7 @@ mod tests {
             vec![],
             TproxyMode::NonAggregated,
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         );
@@ -1897,6 +1925,7 @@ mod tests {
             vec![],
             TproxyMode::NonAggregated,
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         );
@@ -2083,6 +2112,7 @@ mod tests {
             vec![],
             TproxyMode::NonAggregated,
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         );
@@ -2180,6 +2210,7 @@ mod tests {
             vec![],
             TproxyMode::NonAggregated,
             None,
+            crate::share_audit::ShareAudit::disabled(),
             #[cfg(feature = "monitoring")]
             true,
         );

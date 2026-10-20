@@ -4,8 +4,9 @@ This document is the **vocabulary and contract** for share-hash auditing in Tran
 Later phases implement against this file; they should not redefine meanings here without an
 explicit schema revision.
 
-Status: **Phase 0 complete** (semantics locked). **Phase 1 complete** (structured logs).  
-Companion plan: [`SHARE_HASH_AUDIT_PLAN.md`](SHARE_HASH_AUDIT_PLAN.md).
+Status: **Phase 0–2 complete** (schema + structured logs + JSONL). Live JSONL post-check pending restart.  
+Companion plan: [`SHARE_HASH_AUDIT_PLAN.md`](SHARE_HASH_AUDIT_PLAN.md).  
+Log timeline: [`LOG_EVOLUTION.md`](LOG_EVOLUTION.md).
 
 ---
 
@@ -194,4 +195,4 @@ Example lines:
 - [x] Accept + forward both in Phase 1 logging policy (§7)
 - [x] Tip/orphan explicitly deferred to Phase 4 vocabulary only
 
-**Phase 1 done.** Next: Phase 2 — JSONL via `share_audit_path`.
+**Phases 0–2 done in code.** Next live step: rebuild/restart with `share_audit_path`, then fill Post–Phase 2 in `LOG_EVOLUTION.md`. Phase 3 = block-candidate ops prominence.

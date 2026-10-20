@@ -32,6 +32,7 @@ pub mod error;
 mod io_task;
 #[cfg(feature = "monitoring")]
 mod monitoring;
+pub mod share_audit;
 pub mod sv1;
 pub mod sv2;
 mod translator_runtime;
