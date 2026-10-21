@@ -20,6 +20,10 @@ log_file = "./tproxy-braiins-phase1.log"
 share_audit_path = "./share-audit-phase2.jsonl"
 share_audit_block_candidates_only = false
 
+# Phase 3: network-difficulty candidates always land here, even if share_audit_path is unset.
+# A candidate means the header met nbits. It is not proof the block is in the best chain.
+block_candidate_audit_path = "./block-candidates.jsonl"
+
 supported_extensions = [
     0x0002,
 ]

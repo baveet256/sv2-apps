@@ -15,7 +15,7 @@ Plan: [`SHARE_HASH_AUDIT_PLAN.md`](SHARE_HASH_AUDIT_PLAN.md)
 | 0 (schema) | done | n/a (docs only) | n/a |
 | 1 (structured logs) | done + live | Stock translator (below) | Live Braiins run 2026-10-20 |
 | 2 (JSONL) | **done + live** (2026-10-20) | = Phase 1 post (frozen below) | Live Braiins run below |
-| 3 (block candidate ops) | not started | — | — |
+| 3 (block candidate ops) | **code done** | Phase 2 logs (no nbits / no dedicated file) | see Post–Phase 3 |
 | 4 (chain tip RPC) | not started | — | — |
 | 5 (hardening) | not started | — | — |
 
@@ -123,6 +123,35 @@ INFO SubmitSharesSuccess(... last_sequence_number=81, new_submits_accepted_count
 - [x] Sample forward + success/error with hash correlation
 - [x] Phase 1 logs still present
 - [x] Counts recorded
+
+---
+
+## Post–Phase 3
+
+**What changed vs Phase 2**
+
+Phase 2 already wrote `block_candidate` into the main JSONL when `share_audit_path` was set. Phase 3 makes the event unmistakable and durable on its own:
+
+```text
+WARN BLOCK_CANDIDATE meets network target; not a chain-tip confirmation
+     event=block_candidate worker=... job_id=... sequence_number=...
+     share_hash=0000… nbits=0x17020093 blocks_found=1
+     meets_network_target=true chain_status=unknown
+```
+
+Dedicated file `block-candidates.jsonl` (even if the general share audit is off):
+
+```json
+{"event":"block_candidate","share_hash":"…","nbits":"0x17020093","meets_network_target":true,"chain_status":"unknown","worker":"…","sequence_number":1}
+```
+
+`chain_status` stays `unknown` until Phase 4 asks bitcoind. No live candidate was produced in the Braiins session (expected — network difficulty is rare). Unit test covers the JSONL shape.
+
+**Checklist when one appears**
+1. Grep `BLOCK_CANDIDATE` in the translator log.
+2. Open `block-candidates.jsonl` and copy `share_hash`.
+3. Compare that hash to an explorer or `bitcoin-cli getblockheader <hash>` (Phase 4 automates this).
+4. Do not treat the log line as “we are on the tip.”
 
 ---
 

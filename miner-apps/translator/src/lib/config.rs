@@ -70,6 +70,10 @@ pub struct TranslatorConfig {
     /// When true, JSONL only records `block_candidate` rows and their upstream follow-ups.
     #[serde(default)]
     share_audit_block_candidates_only: bool,
+    /// Dedicated JSONL for network-difficulty candidates. Always written, even when
+    /// `share_audit_path` is unset. Empty string disables the dedicated file.
+    #[serde(default = "default_block_candidate_audit_path")]
+    block_candidate_audit_path: PathBuf,
     /// Optional monitoring server bind address
     #[serde(default)]
     monitoring_address: Option<SocketAddr>,
@@ -154,6 +158,7 @@ impl TranslatorConfig {
             log_file: None,
             share_audit_path: None,
             share_audit_block_candidates_only: false,
+            block_candidate_audit_path: default_block_candidate_audit_path(),
             monitoring_address,
             monitoring_cache_refresh_secs,
             miner_telemetry: MinerTelemetryConfig::default(),
@@ -168,6 +173,16 @@ impl TranslatorConfig {
     /// When true, JSONL only records network-difficulty candidates and their follow-ups.
     pub fn share_audit_block_candidates_only(&self) -> bool {
         self.share_audit_block_candidates_only
+    }
+
+    /// Dedicated block-candidate JSONL. Empty path disables it.
+    pub fn block_candidate_audit_path(&self) -> Option<&Path> {
+        let path = self.block_candidate_audit_path.as_path();
+        if path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(path)
+        }
     }
 
     /// Returns the monitoring server bind address (if enabled)
@@ -219,6 +234,10 @@ impl TranslatorConfig {
     pub fn log_dir(&self) -> Option<&Path> {
         self.log_file.as_deref()
     }
+}
+
+fn default_block_candidate_audit_path() -> PathBuf {
+    PathBuf::from("block-candidates.jsonl")
 }
 
 /// Configuration settings for managing difficulty adjustments on the downstream connection.

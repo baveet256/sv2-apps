@@ -400,25 +400,24 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 
 ## Phase 3 — First-class block-candidate handling
 
+**Status: IMPLEMENTED** (live candidate not expected on Braiins mainnet; unit-tested)
+
 **Goal:** Treat network-difficulty shares as the rare, high-value event.
 
-**Do**
-- Dedicated marker e.g. `BLOCK_CANDIDATE` with hash, worker, job_id, nbits/target met
-- Always write these to JSONL even if quieter share audit is disabled
-- Optional: clearer monitoring than bare `blocks_found` (still no full history API unless requested)
-- Manual checklist: reconstruct → hash → compare to explorer/RPC
-
-**Questions**
-- Webhook/Slack? → default **no** in this phase
-- Should tProxy push the block anywhere? → default **record only**
+**Implemented**
+- `BLOCK_CANDIDATE` warn includes `share_hash`, worker, job, sequence, `nbits`, `blocks_found`, and `chain_status=unknown`
+- Message states this is **not** a chain-tip confirmation
+- Dedicated JSONL `block_candidate_audit_path` (default `block-candidates.jsonl`) always records candidates, even when `share_audit_path` is unset
+- Record only — no webhook, no block push
+- Unit test: candidate JSONL row carries `nbits` and `chain_status`
 
 **Cautions**
 - `BlockFound` means network target met at validation time, not “in best chain”
-- Label network (mainnet/testnet/signet) when possible
-- Orphans and races are normal; one candidate can lose
+- Orphans and races are normal; tip check is Phase 4
 
 **Exit criteria**
-- Forced/tested network-difficulty share produces `BLOCK_CANDIDATE` + JSONL row
+- [x] Candidate path writes `block_candidate` JSON with hash + nbits
+- [ ] Live `BLOCK_CANDIDATE` line (only if a share actually meets network difficulty)
 
 ---
 
@@ -505,6 +504,7 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 | 8 | Phase 1 structured share-hash logs | **Yes** |
 | 9 | Phase 1 live validated (Braiins + miner) | **Yes** (2026-10-20) — see `PHASE1_CHANGES.md` |
 | 10 | Phase 2 JSONL implemented + live validated | **Yes** (2026-10-20) — see `LOG_EVOLUTION.md` |
+| 11 | Phase 3 block-candidate file + nbits | **Yes** (code) — live line only if a real candidate appears |
 
 ---
 

@@ -248,24 +248,19 @@ impl TranslatorRuntime<Init> {
 
 impl TranslatorRuntime<IoReady> {
     fn bootstrap_channel_manager(self) -> TranslatorRuntime<ChannelManagerReady> {
-        let share_audit = match self.translator.config.share_audit_path() {
-            Some(path) => {
-                match crate::share_audit::ShareAudit::open(
-                    path,
-                    self.translator.config.share_audit_block_candidates_only(),
-                ) {
-                    Ok(audit) => audit,
-                    Err(e) => {
-                        tracing::error!(
-                            path = %path.display(),
-                            error = %e,
-                            "Failed to open share_audit_path; continuing without JSONL audit"
-                        );
-                        crate::share_audit::ShareAudit::disabled()
-                    }
-                }
+        let share_audit = match crate::share_audit::ShareAudit::open_audits(
+            self.translator.config.share_audit_path(),
+            self.translator.config.share_audit_block_candidates_only(),
+            self.translator.config.block_candidate_audit_path(),
+        ) {
+            Ok(audit) => audit,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "Failed to open share audit files; continuing without JSONL audit"
+                );
+                crate::share_audit::ShareAudit::disabled()
             }
-            None => crate::share_audit::ShareAudit::disabled(),
         };
 
         let channel_manager = Arc::new(ChannelManager::new(

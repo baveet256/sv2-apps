@@ -772,39 +772,16 @@ impl ChannelManager {
                             m.sequence_number =
                                 self.next_share_sequence_number(upstream_extended_channel_id);
 
-                            if block_candidate {
-                                warn!(
-                                    event = "block_candidate",
-                                    worker,
-                                    downstream_channel_id,
-                                    upstream_channel_id = upstream_extended_channel_id,
-                                    job_id = m.job_id,
-                                    sequence_number = m.sequence_number,
-                                    share_hash = %share_hash,
-                                    meets_network_target = true,
-                                    "BLOCK_CANDIDATE"
-                                );
-                            }
-                            info!(
-                                event = "share_forwarded",
+                            self.audit_forwarded_share(
+                                AGGREGATED_CHANNEL_ID,
                                 worker,
                                 downstream_channel_id,
-                                upstream_channel_id = upstream_extended_channel_id,
-                                job_id = m.job_id,
-                                sequence_number = m.sequence_number,
-                                share_hash = %share_hash,
+                                upstream_extended_channel_id,
+                                m.job_id,
+                                m.sequence_number,
+                                &share_hash.to_string(),
                                 block_candidate,
-                                "share_forwarded"
                             );
-                            self.share_audit.record_forwarded(ForwardedShare {
-                                worker,
-                                downstream_channel_id,
-                                upstream_channel_id: upstream_extended_channel_id,
-                                job_id: m.job_id,
-                                sequence_number: m.sequence_number,
-                                share_hash: share_hash.to_string(),
-                                block_candidate,
-                            });
                         }
                         Some(Err(ShareValidationError::DoesNotMeetTarget(error_code))) => {
                             // Per-miner vardiff can intentionally be easier than the aggregated
@@ -887,39 +864,16 @@ impl ChannelManager {
                                     new_extranonce.try_into().map_err(TproxyError::shutdown)?;
                             }
 
-                            if block_candidate {
-                                warn!(
-                                    event = "block_candidate",
-                                    worker,
-                                    downstream_channel_id,
-                                    upstream_channel_id = m.channel_id,
-                                    job_id = m.job_id,
-                                    sequence_number = m.sequence_number,
-                                    share_hash = %share_hash,
-                                    meets_network_target = true,
-                                    "BLOCK_CANDIDATE"
-                                );
-                            }
-                            info!(
-                                event = "share_forwarded",
+                            self.audit_forwarded_share(
+                                m.channel_id,
                                 worker,
                                 downstream_channel_id,
-                                upstream_channel_id = m.channel_id,
-                                job_id = m.job_id,
-                                sequence_number = m.sequence_number,
-                                share_hash = %share_hash,
+                                m.channel_id,
+                                m.job_id,
+                                m.sequence_number,
+                                &share_hash.to_string(),
                                 block_candidate,
-                                "share_forwarded"
                             );
-                            self.share_audit.record_forwarded(ForwardedShare {
-                                worker,
-                                downstream_channel_id,
-                                upstream_channel_id: m.channel_id,
-                                job_id: m.job_id,
-                                sequence_number: m.sequence_number,
-                                share_hash: share_hash.to_string(),
-                                block_candidate,
-                            });
                         }
                         Some(Err(ShareValidationError::DoesNotMeetTarget(error_code))) => {
                             // A downstream vardiff target can intentionally be easier than its
@@ -1414,6 +1368,73 @@ impl ChannelManager {
     /// The counter_key determines which counter to use:
     /// - In aggregated mode: use upstream channel ID (single counter for all shares)
     /// - In non-aggregated mode: use downstream channel ID (one counter per channel)
+    /// Logs a forwarded share and appends JSONL audit rows.
+    ///
+    /// Network-difficulty shares (`BlockFound`) are logged as `BLOCK_CANDIDATE`. That means the
+    /// header hash met the chain-tip `nbits` target at validation time. It is not a statement
+    /// that the block is in Bitcoin's best chain.
+    fn audit_forwarded_share(
+        &self,
+        validation_channel_key: ChannelId,
+        worker: Option<&str>,
+        downstream_channel_id: ChannelId,
+        upstream_channel_id: ChannelId,
+        job_id: u32,
+        sequence_number: u32,
+        share_hash: &str,
+        block_candidate: bool,
+    ) {
+        let (nbits, blocks_found) = self
+            .extended_channels
+            .with(&validation_channel_key, |channel| {
+                let nbits = channel.get_chain_tip().map(|tip| tip.nbits());
+                let blocks_found = channel.get_share_accounting().get_blocks_found();
+                (nbits, blocks_found)
+            })
+            .unwrap_or((None, 0));
+        let nbits_hex = nbits.map(|bits| format!("0x{bits:08x}"));
+
+        if block_candidate {
+            warn!(
+                event = "block_candidate",
+                worker,
+                downstream_channel_id,
+                upstream_channel_id,
+                job_id,
+                sequence_number,
+                share_hash,
+                nbits = nbits_hex.as_deref().unwrap_or(""),
+                blocks_found,
+                meets_network_target = true,
+                chain_status = "unknown",
+                "BLOCK_CANDIDATE meets network target; not a chain-tip confirmation"
+            );
+        }
+
+        info!(
+            event = "share_forwarded",
+            worker,
+            downstream_channel_id,
+            upstream_channel_id,
+            job_id,
+            sequence_number,
+            share_hash,
+            block_candidate,
+            "share_forwarded"
+        );
+
+        self.share_audit.record_forwarded(ForwardedShare {
+            worker,
+            downstream_channel_id,
+            upstream_channel_id,
+            job_id,
+            sequence_number,
+            share_hash: share_hash.to_string(),
+            block_candidate,
+            nbits,
+        });
+    }
+
     fn next_share_sequence_number(&self, counter_key: u32) -> u32 {
         self.share_sequence_counters
             .with_mut_or_default(counter_key, |counter| {

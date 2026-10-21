@@ -19,7 +19,11 @@ use tracing::{info, warn};
 /// Clonable handle; disabled when constructed with [`ShareAudit::disabled`].
 #[derive(Clone, Debug, Default)]
 pub struct ShareAudit {
+    /// General share audit (`share_audit_path`). May be candidates-only.
     inner: Option<Arc<ShareAuditInner>>,
+    /// Dedicated block-candidate file. `None` when disabled or when it is the same
+    /// path as `inner` (that file already records candidates).
+    candidates: Option<Arc<ShareAuditInner>>,
 }
 
 #[derive(Debug)]
@@ -48,43 +52,86 @@ pub struct ForwardedShare<'a> {
     pub sequence_number: u32,
     pub share_hash: String,
     pub block_candidate: bool,
+    /// Compact network target (`nbits`) from the chain tip used to classify `BlockFound`.
+    pub nbits: Option<u32>,
 }
 
 impl ShareAudit {
     pub fn disabled() -> Self {
-        Self { inner: None }
+        Self {
+            inner: None,
+            candidates: None,
+        }
     }
 
     pub fn open(path: &Path, block_candidates_only: bool) -> io::Result<Self> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
         info!(
             path = %path.display(),
             block_candidates_only,
             "Share audit JSONL enabled"
         );
         Ok(Self {
-            inner: Some(Arc::new(ShareAuditInner {
-                file: Mutex::new(file),
-                block_candidates_only,
-                pending: Mutex::new(HashMap::new()),
-            })),
+            inner: Some(open_inner(path, block_candidates_only)?),
+            candidates: None,
         })
     }
 
+    /// Opens the general share audit (optional) and a dedicated block-candidate file.
+    ///
+    /// Candidates are always recorded on `candidate_path` unless it is the same file as
+    /// `share_path` (that file already stores `block_candidate` rows).
+    pub fn open_audits(
+        share_path: Option<&Path>,
+        share_block_candidates_only: bool,
+        candidate_path: Option<&Path>,
+    ) -> io::Result<Self> {
+        let inner = match share_path {
+            Some(path) => {
+                info!(
+                    path = %path.display(),
+                    block_candidates_only = share_block_candidates_only,
+                    "Share audit JSONL enabled"
+                );
+                Some(open_inner(path, share_block_candidates_only)?)
+            }
+            None => None,
+        };
+
+        let candidates = match candidate_path {
+            Some(path) if share_path != Some(path) => {
+                info!(
+                    path = %path.display(),
+                    "Block-candidate JSONL enabled"
+                );
+                Some(open_inner(path, true)?)
+            }
+            Some(path) => {
+                info!(
+                    path = %path.display(),
+                    "Block-candidate JSONL shares the share-audit file"
+                );
+                None
+            }
+            None => None,
+        };
+
+        Ok(Self { inner, candidates })
+    }
+
     pub fn is_enabled(&self) -> bool {
-        self.inner.is_some()
+        self.inner.is_some() || self.candidates.is_some()
     }
 
     pub fn record_forwarded(&self, share: ForwardedShare<'_>) {
-        let Some(inner) = &self.inner else {
-            return;
-        };
+        if let Some(inner) = &self.inner {
+            self.record_on(inner, &share);
+        }
+        if let Some(candidates) = &self.candidates {
+            self.record_on(candidates, &share);
+        }
+    }
 
+    fn record_on(&self, inner: &ShareAuditInner, share: &ForwardedShare<'_>) {
         let pending = PendingForward {
             share_hash: share.share_hash.clone(),
             worker: share.worker.map(str::to_string),
@@ -105,8 +152,10 @@ impl ShareAudit {
                     "job_id": share.job_id,
                     "sequence_number": share.sequence_number,
                     "share_hash": share.share_hash,
+                    "nbits": share.nbits.map(|n| format!("0x{n:08x}")),
                     "meets_network_target": true,
                     "block_candidate": true,
+                    "chain_status": "unknown",
                 }),
             );
         }
@@ -148,9 +197,26 @@ impl ShareAudit {
         last_sequence_number: u32,
         accepted_count: u32,
     ) {
-        let Some(inner) = &self.inner else {
-            return;
-        };
+        if let Some(inner) = &self.inner {
+            self.success_on(inner, upstream_channel_id, last_sequence_number, accepted_count);
+        }
+        if let Some(candidates) = &self.candidates {
+            self.success_on(
+                candidates,
+                upstream_channel_id,
+                last_sequence_number,
+                accepted_count,
+            );
+        }
+    }
+
+    fn success_on(
+        &self,
+        inner: &ShareAuditInner,
+        upstream_channel_id: u32,
+        last_sequence_number: u32,
+        accepted_count: u32,
+    ) {
         if accepted_count == 0 {
             return;
         }
@@ -193,9 +259,21 @@ impl ShareAudit {
         sequence_number: u32,
         error_code: &str,
     ) {
-        let Some(inner) = &self.inner else {
-            return;
-        };
+        if let Some(inner) = &self.inner {
+            self.error_on(inner, upstream_channel_id, sequence_number, error_code);
+        }
+        if let Some(candidates) = &self.candidates {
+            self.error_on(candidates, upstream_channel_id, sequence_number, error_code);
+        }
+    }
+
+    fn error_on(
+        &self,
+        inner: &ShareAuditInner,
+        upstream_channel_id: u32,
+        sequence_number: u32,
+        error_code: &str,
+    ) {
         let pending = {
             let Ok(mut map) = inner.pending.lock() else {
                 return;
@@ -255,6 +333,20 @@ fn now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn open_inner(path: &Path, block_candidates_only: bool) -> io::Result<Arc<ShareAuditInner>> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    Ok(Arc::new(ShareAuditInner {
+        file: Mutex::new(file),
+        block_candidates_only,
+        pending: Mutex::new(HashMap::new()),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +371,7 @@ mod tests {
             sequence_number: 10,
             share_hash: "aa".repeat(32),
             block_candidate: false,
+            nbits: None,
         });
         audit.on_upstream_success(7, 10, 1);
 
@@ -321,6 +414,7 @@ mod tests {
             sequence_number: 1,
             share_hash: "bb".repeat(32),
             block_candidate: false,
+            nbits: None,
         });
         audit.record_forwarded(ForwardedShare {
             worker: Some("rig1"),
@@ -330,6 +424,7 @@ mod tests {
             sequence_number: 2,
             share_hash: "cc".repeat(32),
             block_candidate: true,
+            nbits: Some(0x1702_0093),
         });
 
         let file = File::open(&path).unwrap();
@@ -342,6 +437,51 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("block_candidate")));
         assert!(lines.iter().any(|l| l.contains("share_forwarded")));
         assert!(!lines.iter().any(|l| l.contains(&"bb".repeat(32))));
+        assert!(lines.iter().any(|l| l.contains("0x17020093")));
+        assert!(lines.iter().any(|l| l.contains("\"chain_status\":\"unknown\"")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dedicated_candidate_file_records_candidates_when_share_audit_is_off() {
+        let dir = std::env::temp_dir().join(format!(
+            "tproxy-share-audit-cand-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let candidates = dir.join("block-candidates.jsonl");
+
+        let audit = ShareAudit::open_audits(None, false, Some(&candidates)).unwrap();
+        audit.record_forwarded(ForwardedShare {
+            worker: Some("rig1"),
+            downstream_channel_id: 1,
+            upstream_channel_id: 1,
+            job_id: 9,
+            sequence_number: 3,
+            share_hash: "dd".repeat(32),
+            block_candidate: false,
+            nbits: None,
+        });
+        audit.record_forwarded(ForwardedShare {
+            worker: Some("rig1"),
+            downstream_channel_id: 1,
+            upstream_channel_id: 1,
+            job_id: 9,
+            sequence_number: 4,
+            share_hash: "ee".repeat(32),
+            block_candidate: true,
+            nbits: Some(0x1702_0093),
+        });
+
+        let lines: Vec<String> = BufReader::new(File::open(&candidates).unwrap())
+            .lines()
+            .map(|l| l.unwrap())
+            .collect();
+        assert!(lines.iter().all(|l| l.contains("block_candidate") || l.contains("ee")));
+        assert!(lines.iter().any(|l| l.contains("\"event\":\"block_candidate\"")));
+        assert!(!lines.iter().any(|l| l.contains(&"dd".repeat(32))));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
