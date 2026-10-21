@@ -25,6 +25,7 @@ cobertura.xml
 **/template-provider
 stratum-message-generator
 *.log
+share-audit-phase2.jsonl
 **/minerd
 docker/docker_env
 AGENTS_CUSTOM.md
