@@ -400,7 +400,7 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 
 ## Phase 3 — First-class block-candidate handling
 
-**Status: IMPLEMENTED** (live candidate not expected on Braiins mainnet; unit-tested)
+**Status: LIVE** (2026-10-21 Braiins session). No `BLOCK_CANDIDATE` yet — expected on mainnet. See [`LOG_EVOLUTION.md`](LOG_EVOLUTION.md).
 
 **Goal:** Treat network-difficulty shares as the rare, high-value event.
 
@@ -416,7 +416,8 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 - Orphans and races are normal; tip check is Phase 4
 
 **Exit criteria**
-- [x] Candidate path writes `block_candidate` JSON with hash + nbits
+- [x] Candidate path writes `block_candidate` JSON with hash + nbits (unit test)
+- [x] Live process opened `./block-candidates.jsonl` (2026-10-21T18:14:40Z)
 - [ ] Live `BLOCK_CANDIDATE` line (only if a share actually meets network difficulty)
 
 ---
@@ -504,7 +505,7 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 | 8 | Phase 1 structured share-hash logs | **Yes** |
 | 9 | Phase 1 live validated (Braiins + miner) | **Yes** (2026-10-20) — see `PHASE1_CHANGES.md` |
 | 10 | Phase 2 JSONL implemented + live validated | **Yes** (2026-10-20) — see `LOG_EVOLUTION.md` |
-| 11 | Phase 3 block-candidate file + nbits | **Yes** (code) — live line only if a real candidate appears |
+| 11 | Phase 3 block-candidate file + nbits | **Yes, live** (2026-10-21) — file opened; 0 candidates. Ordinary nacks no longer appended there after the `share_audit` fix |
 
 ---
 

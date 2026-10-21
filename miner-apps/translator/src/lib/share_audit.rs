@@ -280,21 +280,40 @@ impl ShareAudit {
             };
             map.remove(&(upstream_channel_id, sequence_number))
         };
-        let (share_hash, worker, job_id, downstream_channel_id, block_candidate) = match pending {
-            Some(p) => {
-                if inner.block_candidates_only && !p.block_candidate {
-                    return;
-                }
-                (
-                    Some(p.share_hash),
-                    p.worker,
-                    Some(p.job_id),
-                    Some(p.downstream_channel_id),
-                    p.block_candidate,
-                )
+        // A candidates-only file never stores ordinary forwards, so an unmatched nack
+        // here is not a block candidate. Skip it instead of writing a null-hash row.
+        let Some(p) = pending else {
+            if inner.block_candidates_only {
+                return;
             }
-            None => (None, None, None, None, false),
+            self.write_line(
+                inner,
+                json!({
+                    "event": "share_upstream_result",
+                    "ts": now_rfc3339(),
+                    "upstream_channel_id": upstream_channel_id,
+                    "downstream_channel_id": Value::Null,
+                    "sequence_number": sequence_number,
+                    "job_id": Value::Null,
+                    "worker": Value::Null,
+                    "share_hash": Value::Null,
+                    "result": "error",
+                    "error_code": error_code,
+                    "block_candidate": false,
+                }),
+            );
+            return;
         };
+        if inner.block_candidates_only && !p.block_candidate {
+            return;
+        }
+        let (share_hash, worker, job_id, downstream_channel_id, block_candidate) = (
+            Some(p.share_hash),
+            p.worker,
+            Some(p.job_id),
+            Some(p.downstream_channel_id),
+            p.block_candidate,
+        );
 
         self.write_line(
             inner,
@@ -482,6 +501,43 @@ mod tests {
         assert!(lines.iter().all(|l| l.contains("block_candidate") || l.contains("ee")));
         assert!(lines.iter().any(|l| l.contains("\"event\":\"block_candidate\"")));
         assert!(!lines.iter().any(|l| l.contains(&"dd".repeat(32))));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dedicated_candidate_file_skips_ordinary_upstream_errors() {
+        let dir = std::env::temp_dir().join(format!(
+            "tproxy-share-audit-cand-err-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shares = dir.join("shares.jsonl");
+        let candidates = dir.join("block-candidates.jsonl");
+
+        let audit = ShareAudit::open_audits(Some(&shares), false, Some(&candidates)).unwrap();
+        audit.record_forwarded(ForwardedShare {
+            worker: Some("rig1"),
+            downstream_channel_id: 1,
+            upstream_channel_id: 1,
+            job_id: 8,
+            sequence_number: 22,
+            share_hash: "ff".repeat(32),
+            block_candidate: false,
+            nbits: Some(0x1702_0093),
+        });
+        audit.on_upstream_error(1, 22, "difficulty-too-low");
+
+        let candidate_lines: Vec<String> = BufReader::new(File::open(&candidates).unwrap())
+            .lines()
+            .map(|l| l.unwrap())
+            .collect();
+        assert!(candidate_lines.is_empty());
+
+        let share_text = std::fs::read_to_string(&shares).unwrap();
+        assert!(share_text.contains("difficulty-too-low"));
+        assert!(share_text.contains(&"ff".repeat(32)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

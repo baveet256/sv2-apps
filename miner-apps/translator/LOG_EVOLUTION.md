@@ -15,7 +15,7 @@ Plan: [`SHARE_HASH_AUDIT_PLAN.md`](SHARE_HASH_AUDIT_PLAN.md)
 | 0 (schema) | done | n/a (docs only) | n/a |
 | 1 (structured logs) | done + live | Stock translator (below) | Live Braiins run 2026-10-20 |
 | 2 (JSONL) | **done + live** (2026-10-20) | = Phase 1 post (frozen below) | Live Braiins run below |
-| 3 (block candidate ops) | **code done** | Phase 2 logs (no nbits / no dedicated file) | see Post–Phase 3 |
+| 3 (block candidate ops) | **live, no candidate yet** (2026-10-21) | Phase 2 logs (no dedicated file) | Live Braiins run below |
 | 4 (chain tip RPC) | not started | — | — |
 | 5 (hardening) | not started | — | — |
 
@@ -126,11 +126,51 @@ INFO SubmitSharesSuccess(... last_sequence_number=81, new_submits_accepted_count
 
 ---
 
-## Post–Phase 3
+## Post–Phase 3 (live, no network-difficulty share)
 
-**What changed vs Phase 2**
+**Captured:** 2026-10-21T18:22Z (session started 18:14:40Z)  
+**Worker:** `newtranslator1`  
+**Stdout:** Phase 1/2 lines still present. Startup also logged `Block-candidate JSONL enabled path=./block-candidates.jsonl`.  
+**Chain tip from upstream:** `SetNewPrevHash ... nbits=0x17020093` (this is the target a `BLOCK_CANDIDATE` must beat).
 
-Phase 2 already wrote `block_candidate` into the main JSONL when `share_audit_path` was set. Phase 3 makes the event unmistakable and durable on its own:
+### Counts at capture
+
+| Event | Count |
+|-------|------:|
+| `share_accepted` (stdout) | 356 |
+| `share_forwarded` (stdout and JSONL this session) | 47 |
+| `SubmitSharesSuccess` (stdout) | 13 |
+| `share_upstream_result` success (JSONL this session) | 42 |
+| `SubmitSharesError` / JSONL error (this session) | 5 |
+| `BLOCK_CANDIDATE` | 0 |
+
+Ordinary `share_forwarded` lines do **not** gain `nbits`. That field is only on a real candidate.
+
+### Same story as the terminal (seq 18–22)
+
+**Stdout (unchanged from Phase 2 for ordinary shares):**
+```text
+INFO share_forwarded event="share_forwarded" worker="newtranslator1"
+     downstream_channel_id=1 upstream_channel_id=1 job_id=6 sequence_number=18
+     share_hash="00000000000018d658e030802c0310b2cd0862d8a181f9b965135d68045fc91f"
+     block_candidate=false
+INFO SubmitSharesSuccess(channel_id=1, last_sequence_number=19,
+     new_submits_accepted_count=3, new_shares_sum=24576) ✅
+INFO share_forwarded ... job_id=8 sequence_number=22
+     share_hash="000000000004f8b5159568430577ec160c7cf63f95e46180e9c6f5595ee9915a"
+     block_candidate=false
+WARN SubmitSharesError(channel_id=1, sequence_number=22, error_code=difficulty-too-low) ❌
+```
+
+**Main JSONL (`share-audit-phase2.jsonl`) still correlates the hash.** This session’s error for sequence 12:
+
+```json
+{"event":"share_upstream_result","result":"error","error_code":"difficulty-too-low","sequence_number":12,"share_hash":"0000000000015f88201e82703e9938848e7f1856d757f037af88190ad6a8ce7e","worker":"newtranslator1","block_candidate":false}
+```
+
+No `block_candidate` event was written. `chain_status` stays absent until a candidate exists, then `unknown` until Phase 4.
+
+### What a real candidate will look like
 
 ```text
 WARN BLOCK_CANDIDATE meets network target; not a chain-tip confirmation
@@ -139,19 +179,24 @@ WARN BLOCK_CANDIDATE meets network target; not a chain-tip confirmation
      meets_network_target=true chain_status=unknown
 ```
 
-Dedicated file `block-candidates.jsonl` (even if the general share audit is off):
-
 ```json
 {"event":"block_candidate","share_hash":"…","nbits":"0x17020093","meets_network_target":true,"chain_status":"unknown","worker":"…","sequence_number":1}
 ```
 
-`chain_status` stays `unknown` until Phase 4 asks bitcoind. No live candidate was produced in the Braiins session (expected — network difficulty is rare). Unit test covers the JSONL shape.
+### Defect seen in this session
 
-**Checklist when one appears**
+`block-candidates.jsonl` received 5 `share_upstream_result` error rows (`difficulty-too-low`) with `share_hash: null`. Those are ordinary nacks, not candidates. The candidates-only file had no pending forward for them, and the error writer still appended a line. The main audit file kept the real hash. Fixed in `share_audit.rs`: a candidates-only file now skips an error that is not a stored block candidate. The running process keeps the old behavior until the translator is rebuilt and restarted. The 5 rows already in the file stay.
+
+**Checklist when a real candidate appears**
 1. Grep `BLOCK_CANDIDATE` in the translator log.
-2. Open `block-candidates.jsonl` and copy `share_hash`.
+2. Open `block-candidates.jsonl` and copy `share_hash` from an `event=block_candidate` row.
 3. Compare that hash to an explorer or `bitcoin-cli getblockheader <hash>` (Phase 4 automates this).
 4. Do not treat the log line as “we are on the tip.”
+
+- [x] Phase 3 binary live (`Block-candidate JSONL enabled`)
+- [x] Ordinary shares still `block_candidate=false`; main JSONL still has the hash
+- [x] `BLOCK_CANDIDATE` count recorded (0)
+- [ ] Live `BLOCK_CANDIDATE` line (only if a share meets `nbits`)
 
 ---
 
