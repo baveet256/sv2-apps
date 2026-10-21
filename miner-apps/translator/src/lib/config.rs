@@ -74,6 +74,30 @@ pub struct TranslatorConfig {
     /// `share_audit_path` is unset. Empty string disables the dedicated file.
     #[serde(default = "default_block_candidate_audit_path")]
     block_candidate_audit_path: PathBuf,
+    /// bitcoind RPC endpoint for block-candidate chain checks. Unset disables Phase 4.
+    /// `http://127.0.0.1:8332` is the usual local mainnet URL. Credentials stay out of
+    /// this file: use a cookie path, or `TPROXY__SHARE_AUDIT_BITCOIN_RPC_USER` and
+    /// `TPROXY__SHARE_AUDIT_BITCOIN_RPC_PASSWORD`.
+    #[serde(default)]
+    share_audit_bitcoin_rpc_url: Option<String>,
+    /// Bitcoin Core `.cookie` file. Used when user and password are unset.
+    #[serde(default, deserialize_with = "opt_path_from_toml")]
+    share_audit_bitcoin_rpc_cookie_path: Option<PathBuf>,
+    /// RPC user. Prefer the cookie file. Do not commit this value.
+    #[serde(default)]
+    share_audit_bitcoin_rpc_user: Option<String>,
+    /// RPC password. Prefer the cookie file. Debug output redacts this value.
+    #[serde(default)]
+    share_audit_bitcoin_rpc_password: Option<RpcSecret>,
+    /// Seconds to wait after a block candidate before the first `getblockheader`.
+    #[serde(default = "default_chain_poll_initial_secs")]
+    share_audit_chain_poll_initial_secs: u64,
+    /// Stop polling a candidate this many seconds after it was queued.
+    #[serde(default = "default_chain_poll_max_secs")]
+    share_audit_chain_poll_max_secs: u64,
+    /// Stop once a best-chain header has at least this many confirmations.
+    #[serde(default = "default_chain_stop_confirmations")]
+    share_audit_chain_stop_confirmations: u32,
     /// Optional monitoring server bind address
     #[serde(default)]
     monitoring_address: Option<SocketAddr>,
@@ -159,6 +183,13 @@ impl TranslatorConfig {
             share_audit_path: None,
             share_audit_block_candidates_only: false,
             block_candidate_audit_path: default_block_candidate_audit_path(),
+            share_audit_bitcoin_rpc_url: None,
+            share_audit_bitcoin_rpc_cookie_path: None,
+            share_audit_bitcoin_rpc_user: None,
+            share_audit_bitcoin_rpc_password: None,
+            share_audit_chain_poll_initial_secs: default_chain_poll_initial_secs(),
+            share_audit_chain_poll_max_secs: default_chain_poll_max_secs(),
+            share_audit_chain_stop_confirmations: default_chain_stop_confirmations(),
             monitoring_address,
             monitoring_cache_refresh_secs,
             miner_telemetry: MinerTelemetryConfig::default(),
@@ -183,6 +214,26 @@ impl TranslatorConfig {
         } else {
             Some(path)
         }
+    }
+
+    /// bitcoind RPC settings for candidate chain checks. `None` when the URL is unset.
+    pub fn bitcoin_rpc(&self) -> Option<BitcoinRpcSettings> {
+        let url = self.share_audit_bitcoin_rpc_url.as_deref()?.trim();
+        if url.is_empty() {
+            return None;
+        }
+        Some(BitcoinRpcSettings {
+            url: url.to_string(),
+            cookie_path: self.share_audit_bitcoin_rpc_cookie_path.clone(),
+            user: self.share_audit_bitcoin_rpc_user.clone(),
+            password: self
+                .share_audit_bitcoin_rpc_password
+                .as_ref()
+                .map(|secret| secret.0.clone()),
+            initial_secs: self.share_audit_chain_poll_initial_secs,
+            max_secs: self.share_audit_chain_poll_max_secs,
+            stop_confirmations: self.share_audit_chain_stop_confirmations,
+        })
     }
 
     /// Returns the monitoring server bind address (if enabled)
@@ -238,6 +289,41 @@ impl TranslatorConfig {
 
 fn default_block_candidate_audit_path() -> PathBuf {
     PathBuf::from("block-candidates.jsonl")
+}
+
+fn default_chain_poll_initial_secs() -> u64 {
+    120
+}
+
+fn default_chain_poll_max_secs() -> u64 {
+    86_400
+}
+
+fn default_chain_stop_confirmations() -> u32 {
+    6
+}
+
+/// Settings for the optional bitcoind chain-status checker.
+#[derive(Clone)]
+pub struct BitcoinRpcSettings {
+    pub url: String,
+    pub cookie_path: Option<PathBuf>,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub initial_secs: u64,
+    pub max_secs: u64,
+    pub stop_confirmations: u32,
+}
+
+/// RPC password that does not appear in `Debug` output.
+#[derive(Clone, Deserialize)]
+#[serde(transparent)]
+struct RpcSecret(String);
+
+impl std::fmt::Debug for RpcSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 /// Configuration settings for managing difficulty adjustments on the downstream connection.
@@ -341,6 +427,7 @@ mod tests {
         assert!(config.supported_extensions.is_empty());
         assert!(config.required_extensions.is_empty());
         assert!(config.log_file.is_none());
+        assert!(config.bitcoin_rpc().is_none());
     }
 
     #[test]

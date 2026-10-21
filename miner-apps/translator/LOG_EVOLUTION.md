@@ -16,7 +16,7 @@ Plan: [`SHARE_HASH_AUDIT_PLAN.md`](SHARE_HASH_AUDIT_PLAN.md)
 | 1 (structured logs) | done + live | Stock translator (below) | Live Braiins run 2026-10-20 |
 | 2 (JSONL) | **done + live** (2026-10-20) | = Phase 1 post (frozen below) | Live Braiins run below |
 | 3 (block candidate ops) | **live, no candidate yet** (2026-10-21) | Phase 2 logs (no dedicated file) | Live Braiins run below |
-| 4 (chain tip RPC) | not started | — | — |
+| 4 (chain tip RPC) | **code done, off until a node is set** | Phase 3 candidate file | see Post–Phase 4 |
 | 5 (hardening) | not started | — | — |
 
 ---
@@ -185,7 +185,7 @@ WARN BLOCK_CANDIDATE meets network target; not a chain-tip confirmation
 
 ### Defect seen in this session
 
-`block-candidates.jsonl` received 5 `share_upstream_result` error rows (`difficulty-too-low`) with `share_hash: null`. Those are ordinary nacks, not candidates. The candidates-only file had no pending forward for them, and the error writer still appended a line. The main audit file kept the real hash. Fixed in `share_audit.rs`: a candidates-only file now skips an error that is not a stored block candidate. The running process keeps the old behavior until the translator is rebuilt and restarted. The 5 rows already in the file stay.
+`block-candidates.jsonl` received 5 `share_upstream_result` error rows (`difficulty-too-low`) with `share_hash: null`. Those are ordinary nacks, not candidates. The candidates-only file had no pending forward for them, and the error writer still appended a line. The main audit file kept the real hash. Fixed in `share_audit.rs`: a candidates-only file now skips an error that is not a stored block candidate. Confirmed after the 2026-10-21T19:46:32Z restart: `SubmitSharesError` (`difficulty-too-low`) still appears in the log, and `block-candidates.jsonl` gained no new rows. The lines already in that file are from the previous process (last one 19:43:06Z).
 
 **Checklist when a real candidate appears**
 1. Grep `BLOCK_CANDIDATE` in the translator log.
@@ -197,6 +197,28 @@ WARN BLOCK_CANDIDATE meets network target; not a chain-tip confirmation
 - [x] Ordinary shares still `block_candidate=false`; main JSONL still has the hash
 - [x] `BLOCK_CANDIDATE` count recorded (0)
 - [ ] Live `BLOCK_CANDIDATE` line (only if a share meets `nbits`)
+
+---
+
+## Post–Phase 4 (code, checker off)
+
+**Not live.** No `share_audit_bitcoin_rpc_url` is set, so this translator does not call bitcoind. Ordinary shares are not queried.
+
+When a real `BLOCK_CANDIDATE` is queued and RPC is on, a later line looks like:
+
+```text
+INFO chain_status block is in the best chain
+     share_hash=0000… chain_status=in_best_chain confirmations=6 network=mainnet
+     poll_expired=false
+```
+
+```json
+{"event":"chain_status","share_hash":"…","chain_status":"in_best_chain","confirmations":6,"network":"mainnet","poll_expired":false}
+```
+
+Other `chain_status` values: `not_found` (node has not seen the hash yet; kept until 24h), `orphaned_or_stale` (node knows the header and it is not in the best chain). A failed RPC is a warning and does not write `not_found`.
+
+Schedule: first check 120s after the candidate, then 10 / 30 / 60 minutes. Stop at 6 confirmations or 24 hours. An upstream fallback drops in-memory polls; lines already written stay.
 
 ---
 

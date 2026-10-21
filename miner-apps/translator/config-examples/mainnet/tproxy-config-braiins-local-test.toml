@@ -24,6 +24,16 @@ share_audit_block_candidates_only = false
 # A candidate means the header met nbits. It is not proof the block is in the best chain.
 block_candidate_audit_path = "./block-candidates.jsonl"
 
+# Phase 4: ask a local bitcoind whether a BLOCK_CANDIDATE is in the best chain.
+# Leave these unset to keep the checker off. Do not commit RPC credentials.
+# The node must be the same network as the pool (Braiins here is Bitcoin mainnet).
+# share_audit_bitcoin_rpc_url = "http://127.0.0.1:8332"
+# share_audit_bitcoin_rpc_cookie_path = "/absolute/path/to/.cookie"
+# First check after 120s, then 10 / 30 / 60 minutes. Stop at 6 confirmations or 24h.
+# share_audit_chain_poll_initial_secs = 120
+# share_audit_chain_poll_max_secs = 86400
+# share_audit_chain_stop_confirmations = 6
+
 supported_extensions = [
     0x0002,
 ]

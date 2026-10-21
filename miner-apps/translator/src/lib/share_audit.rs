@@ -14,6 +14,7 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 
 /// Clonable handle; disabled when constructed with [`ShareAudit::disabled`].
@@ -24,6 +25,42 @@ pub struct ShareAudit {
     /// Dedicated block-candidate file. `None` when disabled or when it is the same
     /// path as `inner` (that file already records candidates).
     candidates: Option<Arc<ShareAuditInner>>,
+    /// Queues block-candidate hashes for a bitcoind check. Unset when RPC is off.
+    chain_checks: Option<ChainCheckSink>,
+}
+
+#[derive(Clone)]
+struct ChainCheckSink(UnboundedSender<ChainCheckRequest>);
+
+impl std::fmt::Debug for ChainCheckSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ChainCheckSink")
+    }
+}
+
+/// A network-difficulty share waiting for a bitcoind lookup.
+#[derive(Clone, Debug)]
+pub struct ChainCheckRequest {
+    pub share_hash: String,
+    pub worker: Option<String>,
+    pub downstream_channel_id: u32,
+    pub upstream_channel_id: u32,
+    pub job_id: u32,
+    pub sequence_number: u32,
+}
+
+/// One bitcoind answer appended to the audit trail.
+pub struct ChainStatusUpdate {
+    pub share_hash: String,
+    pub worker: Option<String>,
+    pub downstream_channel_id: u32,
+    pub upstream_channel_id: u32,
+    pub job_id: u32,
+    pub sequence_number: u32,
+    pub chain_status: &'static str,
+    pub confirmations: Option<i64>,
+    pub network: Option<String>,
+    pub poll_expired: bool,
 }
 
 #[derive(Debug)]
@@ -61,6 +98,7 @@ impl ShareAudit {
         Self {
             inner: None,
             candidates: None,
+            chain_checks: None,
         }
     }
 
@@ -73,6 +111,7 @@ impl ShareAudit {
         Ok(Self {
             inner: Some(open_inner(path, block_candidates_only)?),
             candidates: None,
+            chain_checks: None,
         })
     }
 
@@ -115,11 +154,20 @@ impl ShareAudit {
             None => None,
         };
 
-        Ok(Self { inner, candidates })
+        Ok(Self {
+            inner,
+            candidates,
+            chain_checks: None,
+        })
     }
 
     pub fn is_enabled(&self) -> bool {
         self.inner.is_some() || self.candidates.is_some()
+    }
+
+    pub fn with_chain_checks(mut self, tx: UnboundedSender<ChainCheckRequest>) -> Self {
+        self.chain_checks = Some(ChainCheckSink(tx));
+        self
     }
 
     pub fn record_forwarded(&self, share: ForwardedShare<'_>) {
@@ -128,6 +176,91 @@ impl ShareAudit {
         }
         if let Some(candidates) = &self.candidates {
             self.record_on(candidates, &share);
+        }
+        if share.block_candidate {
+            self.enqueue_chain_check(&share);
+        }
+    }
+
+    fn enqueue_chain_check(&self, share: &ForwardedShare<'_>) {
+        let Some(sink) = &self.chain_checks else {
+            return;
+        };
+        let request = ChainCheckRequest {
+            share_hash: share.share_hash.clone(),
+            worker: share.worker.map(str::to_string),
+            downstream_channel_id: share.downstream_channel_id,
+            upstream_channel_id: share.upstream_channel_id,
+            job_id: share.job_id,
+            sequence_number: share.sequence_number,
+        };
+        if sink.0.send(request).is_err() {
+            warn!(
+                share_hash = %share.share_hash,
+                "chain status: checker is not running"
+            );
+            return;
+        }
+        info!(
+            share_hash = %share.share_hash,
+            "chain status: queued block candidate for bitcoind check"
+        );
+    }
+
+    /// Appends a bitcoind answer. The candidate row itself stays `chain_status=unknown`.
+    pub fn record_chain_status(&self, update: &ChainStatusUpdate) {
+        match update.chain_status {
+            "in_best_chain" => info!(
+                event = "chain_status",
+                share_hash = %update.share_hash,
+                worker = update.worker.as_deref().unwrap_or(""),
+                chain_status = update.chain_status,
+                confirmations = update.confirmations.unwrap_or(0),
+                network = update.network.as_deref().unwrap_or(""),
+                poll_expired = update.poll_expired,
+                "chain_status block is in the best chain"
+            ),
+            "orphaned_or_stale" => warn!(
+                event = "chain_status",
+                share_hash = %update.share_hash,
+                worker = update.worker.as_deref().unwrap_or(""),
+                chain_status = update.chain_status,
+                confirmations = update.confirmations.unwrap_or(-1),
+                network = update.network.as_deref().unwrap_or(""),
+                poll_expired = update.poll_expired,
+                "chain_status header is known but not in the best chain"
+            ),
+            _ => info!(
+                event = "chain_status",
+                share_hash = %update.share_hash,
+                worker = update.worker.as_deref().unwrap_or(""),
+                chain_status = update.chain_status,
+                network = update.network.as_deref().unwrap_or(""),
+                poll_expired = update.poll_expired,
+                "chain_status block hash is not in the node yet"
+            ),
+        }
+
+        let line = json!({
+            "event": "chain_status",
+            "ts": now_rfc3339(),
+            "checked_at": now_rfc3339(),
+            "share_hash": update.share_hash,
+            "worker": update.worker,
+            "downstream_channel_id": update.downstream_channel_id,
+            "upstream_channel_id": update.upstream_channel_id,
+            "job_id": update.job_id,
+            "sequence_number": update.sequence_number,
+            "chain_status": update.chain_status,
+            "confirmations": update.confirmations,
+            "network": update.network,
+            "poll_expired": update.poll_expired,
+        });
+        if let Some(inner) = &self.inner {
+            self.write_line(inner, line.clone());
+        }
+        if let Some(candidates) = &self.candidates {
+            self.write_line(candidates, line);
         }
     }
 

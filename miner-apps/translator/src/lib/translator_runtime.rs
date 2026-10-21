@@ -262,6 +262,7 @@ impl TranslatorRuntime<IoReady> {
                 crate::share_audit::ShareAudit::disabled()
             }
         };
+        let share_audit = self.start_chain_status_if_configured(share_audit);
 
         let channel_manager = Arc::new(ChannelManager::new(
             self.state.io.channel_manager_to_upstream_sender.clone(),
@@ -292,6 +293,59 @@ impl TranslatorRuntime<IoReady> {
                 channel_manager,
             },
         }
+    }
+
+    /// Starts the bitcoind poller when an RPC URL is configured.
+    ///
+    /// The task registers with the fallback coordinator so an upstream reconnect waits for it
+    /// to stop, then bootstrap starts a new poller with the new channel manager. Hashes already
+    /// queued are not resumed. RPC failures do not shut the translator down.
+    fn start_chain_status_if_configured(
+        &self,
+        audit: crate::share_audit::ShareAudit,
+    ) -> crate::share_audit::ShareAudit {
+        let Some(settings) = self.translator.config.bitcoin_rpc() else {
+            return audit;
+        };
+        let client = match crate::chain_status::BitcoinRpcClient::new(
+            &settings.url,
+            settings.cookie_path.clone(),
+            settings.user.clone(),
+            settings.password.clone(),
+        ) {
+            Ok(client) => client,
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Bitcoin RPC config is invalid; chain-status checks are off"
+                );
+                return audit;
+            }
+        };
+        info!(
+            url = %client.endpoint(),
+            initial_secs = settings.initial_secs,
+            max_secs = settings.max_secs,
+            stop_confirmations = settings.stop_confirmations,
+            "Chain-status RPC enabled; only block candidates are checked"
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let policy = crate::chain_status::PollPolicy::production(
+            settings.initial_secs,
+            settings.max_secs,
+            settings.stop_confirmations,
+        );
+        let cancel = self.translator.cancellation_token.clone();
+        let fallback_coordinator = self.fallback_coordinator.clone();
+        let audit_for_task = audit.clone();
+        self.task_manager.spawn(async move {
+            let handler = fallback_coordinator.register();
+            let fallback_token = fallback_coordinator.token();
+            crate::chain_status::run(rx, client, audit_for_task, policy, cancel, fallback_token)
+                .await;
+            handler.done();
+        });
+        audit.with_chain_checks(tx)
     }
 }
 

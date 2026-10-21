@@ -424,32 +424,30 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 
 ## Phase 4 — Chain tip / orphan status (Bitcoin)
 
+**Status: IMPLEMENTED, off until `share_audit_bitcoin_rpc_url` is set.** No local node is configured in the Braiins test config.
+
 **Goal:** Answer whether a recorded hash made it into Bitcoin’s best chain.
 
-**Do**
-- Optional config: bitcoind RPC URL + auth (or cookie path)
-- Background checker for `BLOCK_CANDIDATE` (optionally any audited hash):
-  - `getblockheader` / `getblock`
-  - missing → `not_found` (yet)
-  - in best chain → `in_best_chain` + confirmations
-  - known but not best chain → `orphaned_or_stale` (careful wording)
-- Append `chain_status` events to JSONL
-- Poll with backoff; stop after N confirmations or TTL
-
-**Questions (must answer before coding)**
-- Local/full bitcoind RPC available, or defer this phase?
-- Mainnet only, or also testnet/signet labels?
-- How long to poll a missing candidate (hours vs days)?
+**Implemented**
+- Optional config: `share_audit_bitcoin_rpc_url`, cookie path, or user/password via env. Unset URL = no RPC.
+- Background checker for `BLOCK_CANDIDATE` only (`getblockchaininfo` + `getblockheader`)
+- `not_found` while the node does not know the hash; `in_best_chain` + confirmations; `orphaned_or_stale` when confirmations are negative
+- Append `chain_status` JSONL and a tracing line. A down node is a warning, not `not_found`
+- First check after 120s, then 10 / 30 / 60 minutes. Stop at 6 confirmations or 24h
+- Chain label comes from the node (`main` → `mainnet`)
 
 **Cautions**
 - Never commit RPC credentials; prefer cookie auth
-- Don’t mark orphan too early (propagation delay)
-- Trust boundary = whatever bitcoind you point at
-- Rate-limit RPC; don’t check every ordinary share
+- Don’t mark orphan on a missing hash (propagation delay). `orphaned_or_stale` is only when the node already knows the header and it is not in the best chain
+- Trust boundary = whatever bitcoind you point at. Braiins mainnet needs a mainnet node
+- Rate-limit RPC; ordinary shares are not checked
+- A fallback or process restart drops polls that are still in memory
 
 **Exit criteria**
-- Known fixture/mainnet hash → `in_best_chain` with confirmations
-- Synthetic unknown hash → `not_found`, then ages out
+- [x] Known header fixture → `in_best_chain` with confirmations
+- [x] Unknown hash → `not_found`, then ages out (`poll_expired`)
+- [x] RPC error does not write `not_found`
+- [ ] Live check against the operator's bitcoind
 
 ---
 
@@ -499,7 +497,7 @@ Optional forensic mode (larger): `prev_hash`, `merkle_root`, `ntime`, `bits`, `n
 | 2 | JSONL via `share_audit_path` | **Yes** (Phase 0) |
 | 3 | Phase 1 log both accepted + forwarded | **Yes** |
 | 4 | Farm-scale volume for those levels | **OK** |
-| 5 | bitcoind RPC for Phase 4 now, or defer? | *open* |
+| 5 | bitcoind RPC for Phase 4 | **Checker implemented, off until a URL is set.** Defaults: candidates only; first check 120s; then 10/30/60 min; stop at 6 confirmations or 24h. Chain name is read from the node. Live node not configured. |
 | 6 | Private fork first vs PR-ready to sv2-apps? | *open* |
 | 7 | Phase 0 schema frozen | **Yes** — see `SHARE_HASH_AUDIT_SCHEMA.md` |
 | 8 | Phase 1 structured share-hash logs | **Yes** |

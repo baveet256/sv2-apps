@@ -128,13 +128,23 @@ TOML / env follow existing Translator conventions (`TPROXY__*` with `__` nesting
 | `share_audit_path` | optional path | unset / empty | 2 | Append-only JSONL file. Unset = logs only (Phase 1 behavior). |
 | `share_audit_block_candidates_only` | bool | `false` | 2 | If `true`, JSONL records only `block_candidate` (+ their follow-up events). Logs for accept/forward still follow Phase 1 policy. |
 
-### Reserved for Phase 4 (names provisional, not implemented in Phase 0–3)
+### Reserved names, wired in Phase 4
 
-| Key | Intent |
-|-----|--------|
-| `share_audit_bitcoin_rpc_url` | bitcoind RPC endpoint |
-| `share_audit_bitcoin_rpc_auth` / cookie path | Credentials (never commit) |
-| `share_audit_chain_poll_*` | Backoff / TTL / confirmations stop |
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `share_audit_bitcoin_rpc_url` | optional string | unset | `http://host:port`. Unset = checker off. HTTPS is not accepted. |
+| `share_audit_bitcoin_rpc_cookie_path` | optional path | unset | Bitcoin Core `.cookie` (`user:password`). |
+| `share_audit_bitcoin_rpc_user` / `share_audit_bitcoin_rpc_password` | optional string | unset | Used together when there is no cookie. Prefer env, never commit. |
+| `share_audit_chain_poll_initial_secs` | number | `120` | Delay before the first `getblockheader`. |
+| `share_audit_chain_poll_max_secs` | number | `86400` | Give up after this age. |
+| `share_audit_chain_stop_confirmations` | number | `6` | Stop once the header is in the best chain with this many confirmations. |
+
+After the first check the delay is 10 minutes, then 30, then 60. Only `block_candidate` hashes are queried.
+
+```bash
+TPROXY__SHARE_AUDIT_BITCOIN_RPC_URL=http://127.0.0.1:8332
+TPROXY__SHARE_AUDIT_BITCOIN_RPC_COOKIE_PATH=$HOME/.bitcoin/.cookie
+```
 
 Env examples (Phase 2+):
 
@@ -155,6 +165,8 @@ Agreed for farm-scale use:
 | `share_forwarded` | info (structured) | Include `share_hash`, `sequence_number`, `block_candidate` |
 | `share_not_forwarded` | debug | Include `share_hash` + `reason` |
 | `block_candidate` | warn | Distinct marker string `BLOCK_CANDIDATE` allowed in message; fields still structured |
+| `chain_status` `in_best_chain` / `not_found` | info | Phase 4, block candidates only |
+| `chain_status` `orphaned_or_stale` | warn | Node knows the header and it is not in the best chain |
 
 Do not log full coinbase blobs or private job templates.
 

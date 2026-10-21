@@ -27,6 +27,7 @@ use crate::utils::TproxyMode;
 
 use translator_runtime::{Init, RuntimeEvent, TranslatorRuntime};
 
+pub mod chain_status;
 pub mod config;
 pub mod error;
 mod io_task;
